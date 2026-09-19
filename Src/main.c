@@ -26,6 +26,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "debug_port.h"
+#include "bno085.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -35,7 +36,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-TxRingBuffer_t debugBuffer = {0};
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -46,12 +47,7 @@ TxRingBuffer_t debugBuffer = {0};
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-uint8_t wrap_msg[] = "ABCDEFGHIJKLMNOPQRST";
 
-
-volatile BufferStatus_t wrap_write_status;
-
-volatile DebugStatus_t wrap_send_status;
 
 
 /* USER CODE END PV */
@@ -100,13 +96,13 @@ int main(void)
   MX_SPI2_Init();
   MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
- debugBuffer.head = 500;
- debugBuffer.tail = 500;
+  BNO085_Status_t bno_status;
+  bno_status = BN085_Init();
 
- wrap_write_status = RingBufferWrite(&debugBuffer, wrap_msg, sizeof(wrap_msg) - 1U);
-
- wrap_send_status = DebugSend_DMA(&debugBuffer);
- __NOP();
+  if(bno_status != BNO085_STATUS_OK)
+  {
+	  Error_Handler();
+  }
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -116,6 +112,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+	  BNO085_Process();
 
   }
   /* USER CODE END 3 */
