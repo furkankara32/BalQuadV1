@@ -75,4 +75,6 @@ BNO085_Status_t BNO085_StartCalibration(void);
 
 BNO085_Status_t BNO085_SaveCalibration(void);
 
+BNO085_Status_t BNO085_RequestProductID(void);
+
 #endif /* INC_BNO085_H_ */

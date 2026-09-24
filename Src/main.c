@@ -103,6 +103,14 @@ int main(void)
   {
 	  Error_Handler();
   }
+
+  bno_status = BNO085_RequestProductID();
+
+  if(bno_status != BNO085_STATUS_OK)
+  {
+	  Error_Handler();
+  }
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
