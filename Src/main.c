@@ -48,8 +48,9 @@
 
 /* USER CODE BEGIN PV */
 
-
-
+BNO085_Quaternion_t quaternion;
+BNO085_Euler_t euler;
+uint8_t calibration_started = 0U;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -97,6 +98,8 @@ int main(void)
   MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
   BNO085_Status_t bno_status;
+
+
   bno_status = BN085_Init();
 
   if(bno_status != BNO085_STATUS_OK)
@@ -104,12 +107,13 @@ int main(void)
 	  Error_Handler();
   }
 
-  bno_status = BNO085_RequestProductID();
+  bno_status = BNO085_EnableRotationVector(BNO085_ROTATION_VECTOR_INTERVAL_US);
 
   if(bno_status != BNO085_STATUS_OK)
   {
 	  Error_Handler();
   }
+
 
   /* USER CODE END 2 */
 
@@ -120,7 +124,29 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+
+
 	  BNO085_Process();
+
+	  if(calibration_started == 0U)
+	  {
+		  bno_status = BNO085_StartCalibration();
+
+		  if(bno_status == BNO085_STATUS_OK)
+		  {
+			  calibration_started = 1U;
+		  }else if(bno_status != BNO085_STATUS_BUSY)
+		  {
+			  Error_Handler();
+		  }
+	  }
+
+	  if(BNO085_GetQuaternion(&quaternion) == BNO085_STATUS_OK)
+	  {
+		  BNO085_QuaternionToEuler(&quaternion, &euler);
+
+		  __NOP();
+	  }
 
   }
   /* USER CODE END 3 */

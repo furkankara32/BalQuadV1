@@ -7,6 +7,7 @@
 
 
 #include "bno085.h"
+#include "math.h"
 
 typedef enum
 {
@@ -50,7 +51,7 @@ typedef struct
 #define BNO085_TX_BUFFER_SIZE    		512U
 #define BNO085_SPI_TIMEOUT_MS    		200U
 #define BNO085_CHANNEL_COUNT			6U
-
+#define BNO085_RAD_TO_DEG				57.2957795f
 
 static volatile BNO085_SPI_State_t spi_state = BNO085_SPI_IDLE;
 static volatile uint8_t bno085_int_flag = 0U;
@@ -72,7 +73,10 @@ static volatile uint8_t tx_pending = 0U;
 static uint16_t tx_length = 0U;
 static BNO085_Channel_t tx_channel;
 static uint32_t tx_wake_start_tick = 0U;
+static uint8_t command_sequence = 0U;
 
+static BNO085_Quaternion_t latest_quaternion = {0};
+static volatile uint8_t quaternion_ready = 0U;
 
 /*
  * STATIC FUNCTION PROTOTYPES
@@ -86,6 +90,9 @@ static BNO085_Status_t BNO085_ReadPacketBlocking(void);
 static BNO085_Status_t BNO085_ConsumeStartupPackets(void);
 static BNO085_Status_t BNO085_SendPacket(BNO085_Channel_t channel, const uint8_t *payload, uint16_t payload_length);
 static BNO085_Status_t BNO085_StartTxDMA(void);
+static BNO085_Status_t BNO085_ParseRotationVector(const uint8_t *packet, BNO085_Quaternion_t *quaternion);
+
+
 
 /*
  * ******************************************STATIC FUNCTIONS****************************************************
@@ -252,8 +259,6 @@ static BNO085_Status_t BNO085_ReadPacketBlocking(void)
 	}
 
 
-
-
 	status = BNO085_ParseHeader(shtp_header_rx, &BNO085_Header);
 
 	if(status != BNO085_STATUS_OK)
@@ -401,6 +406,38 @@ static BNO085_Status_t BNO085_StartTxDMA(void)
 	return BNO085_STATUS_OK;
 }
 
+static BNO085_Status_t BNO085_ParseRotationVector(const uint8_t *packet, BNO085_Quaternion_t *quaternion)
+{
+	int16_t raw_x;
+	int16_t raw_y;
+	int16_t raw_z;
+	int16_t raw_w;
+
+	if( (packet == NULL) || (quaternion == NULL) )
+	{
+		return BNO085_STATUS_ERROR;
+	}
+	if ((packet[4] != 0xFBU) || (packet[9] != 0X05) )
+	{
+		return BNO085_STATUS_INVALID_PACKET;
+	}
+
+	quaternion->accuracy = ( packet[11] & (0x03U) ); //Read Accuracy value
+
+	raw_x = (int16_t)( ( (uint16_t)packet[14] << 8U ) | packet[13] ) ;
+	raw_y = (int16_t)( ( (uint16_t)packet[16] << 8U ) | packet[15] ) ;
+	raw_z = (int16_t)( ( (uint16_t)packet[18] << 8U ) | packet[17] ) ;
+	raw_w = (int16_t)( ( (uint16_t)packet[20] << 8U ) | packet[19] ) ;
+
+	quaternion->x = (float)raw_x / 16384.0f; // Q14
+	quaternion->y = (float)raw_y / 16384.0f; // Q14
+	quaternion->z = (float)raw_z / 16384.0f; // Q14
+	quaternion->w = (float)raw_w / 16384.0f; // Q14
+
+
+	return BNO085_STATUS_OK;
+}
+
 /*
  **************************************** PUBLIC API'S *****************************************************************
  */
@@ -471,8 +508,22 @@ void BNO085_Process(void)
 			return;
 		}
 
+		if( (BNO085_PacketHeader.channel == BNO085_CHANNEL_INPUT_SENSOR_REPORTS) && (BNO085_PacketHeader.length >= 23U) &&
+				(shtp_packet_rx[4] == 0xFBU) &&  (shtp_packet_rx[9] == 0x05U) )
+		{
+			status = BNO085_ParseRotationVector(shtp_packet_rx, &latest_quaternion);
 
-		__NOP();
+			if(status != BNO085_STATUS_OK)
+			{
+				spi_state = BNO085_SPI_ERROR;
+
+				return;
+			}
+
+			quaternion_ready = 1U;
+		}
+
+
 		return;
 	}
 
@@ -566,6 +617,105 @@ BNO085_Status_t BNO085_RequestProductID(void)
 	return BNO085_SendPacket(BNO085_CHANNEL_CONTROL, payload, sizeof(payload));
 }
 
+BNO085_Status_t BNO085_EnableRotationVector(uint32_t interval_us)
+{
+	uint8_t payload[17] = {0};
+
+	payload[0] = 0xFDU; // Set feture command
+	payload[1] = 0x05U; // Rotation vector ID
+
+	payload[5] = (uint8_t)((interval_us >> 0U) & 0xFFU);
+	payload[6] = (uint8_t)((interval_us >> 8U) & 0xFFU);
+	payload[7] = (uint8_t)((interval_us >> 16U) & 0xFFU);
+	payload[8] = (uint8_t)((interval_us >> 24U) & 0xFFU);
+
+	return BNO085_SendPacket(BNO085_CHANNEL_CONTROL, payload, sizeof(payload));
+
+}
+
+BNO085_Status_t BNO085_GetQuaternion(BNO085_Quaternion_t *quaternion)
+{
+		if(quaternion == NULL)
+		{
+			return BNO085_STATUS_ERROR;
+		}
+
+		if(quaternion_ready == 0U)
+		{
+			return BNO085_STATUS_BUSY;
+		}
+
+		*quaternion = latest_quaternion;
+
+		quaternion_ready = 0U;
+
+		return BNO085_STATUS_OK;
+}
+
+void BNO085_QuaternionToEuler(const BNO085_Quaternion_t *quaternion, BNO085_Euler_t *euler)
+{
+	float norm;
+	float x,y,z,w;
+	float sinp;
+
+	if((quaternion == NULL) || (euler == NULL))
+	{
+		return;
+	}
+	norm = sqrtf((quaternion->x * quaternion->x) + (quaternion->y * quaternion->y) + (quaternion->z * quaternion->z) + (quaternion->w * quaternion->w) );
+
+	if(norm <= 0.0f)
+	{
+		return;
+	}
+
+	x = quaternion->x / norm;
+	y = quaternion->y / norm;
+	z = quaternion->z / norm;
+	w = quaternion->w / norm;
+
+	euler->roll = atan2f( 2.0f * (w*x + y * z ),  1.0f - 2.0f * (x * x + y * y ) ) * BNO085_RAD_TO_DEG;
+
+	sinp = 2.0f * (w * y - z * x);
+
+	if(sinp > 1.0f)
+	{
+		sinp = 1.0f;
+
+	}else if(sinp < -1.0f)
+	{
+		sinp = -1.0f;
+	}
+
+	euler->pitch = asinf(sinp) * BNO085_RAD_TO_DEG;
+
+	euler->yaw = atan2f(2.0f * (w * z + x * y )  , 1.0f - 2.0f * (y *y + z * z) ) * BNO085_RAD_TO_DEG;
+
+}
+
+BNO085_Status_t BNO085_StartCalibration(void)
+{
+	uint8_t payload[12] ={0};
+
+	BNO085_Status_t status;
+
+
+	payload[0] = 0xF2U;
+	payload[1] = command_sequence;
+	payload[2] = 0x07U;
+	payload[3] = 1U; // ACCEL CALIBRATION ENABLE
+	payload[4] = 1U; // GYRO CALIBRATION ENABLE
+	payload[5] = 1U; // MAG CALIBRATION ENABLE
+
+	status = BNO085_SendPacket(BNO085_CHANNEL_CONTROL, payload, 12U);
+
+	if(status == BNO085_STATUS_OK)
+	{
+		command_sequence++;
+	}
+
+	return status;
+}
 /*
  *********************************************** CALLBACK FUNCTIONS **********************************************
  */
